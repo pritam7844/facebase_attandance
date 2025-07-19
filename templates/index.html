@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Attendance Dashboard</title>
+    <style>
+        body { font-family: Arial; background: #f4f4f4; padding: 20px; }
+        h1 { text-align: center; }
+        table { width: 100%; border-collapse: collapse; background: white; }
+        th, td { padding: 10px; border: 1px solid #ccc; text-align: center; }
+        th { background: #007bff; color: white; }
+        img { width: 100px; height: auto; }
+    </style>
+</head>
+<body>
+    <h1>Attendance Records</h1>
+    <table>
+        <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Check-In</th>
+            <th>Check-Out</th>
+            <th>Image</th>
+        </tr>
+        {% for r in records %}
+        <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.name }}</td>
+            <td>{{ r.date }}</td>
+            <td>{{ r.check_in_time }}</td>
+            <td>{{ r.check_out_time or "-" }}</td>
+            <td><img src="{{ '/' + r.image_path }}" alt="Face Image"></td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
