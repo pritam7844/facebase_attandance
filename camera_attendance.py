@@ -1,0 +1,189 @@
+# === camera_attendance.py ===
+import face_recognition
+import os
+import cv2
+import numpy as np
+from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import pandas as pd
+
+# ========== DATABASE SETUP ==========
+Base = declarative_base()
+engine = create_engine('sqlite:///attendance.db')
+Session = sessionmaker(bind=engine)
+session = Session()
+
+class Attendance(Base):
+    __tablename__ = 'attendance'
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    date = Column(String)
+    check_in_time = Column(String)
+    check_out_time = Column(String)
+    image_path = Column(String)
+
+Base.metadata.create_all(engine)
+
+# ========== EYE DETECTION ==========
+eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye_tree_eyeglasses.xml')
+
+# ========== ENCODE KNOWN FACES ==========
+def encode_faces(dataset_path='dataset'):
+    known_faces = []
+    known_names = []
+
+    for root, dirs, files in os.walk(dataset_path):
+        for file in files:
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                img_path = os.path.join(root, file)
+                try:
+                    img = face_recognition.load_image_file(img_path)
+                    encodings = face_recognition.face_encodings(img)
+                    if encodings:
+                        known_faces.append(encodings[0])
+                        label = os.path.basename(os.path.dirname(img_path))
+                        known_names.append(label)
+                        print(f"Encoded: {img_path} as {label}")
+                except Exception as e:
+                    print(f"Skipping {img_path}: {e}")
+    return known_faces, known_names
+
+def run_attendance_system():
+    print("Encoding faces from dataset...")
+    known_faces, known_names = encode_faces()
+    if not known_faces:
+        print("Warning: No known faces found. Exiting.")
+        return
+
+    cap = cv2.VideoCapture(0)
+    FACE_DISTANCE_THRESHOLD = 0.5
+    print("Starting camera. Press 'q' to quit.")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        face_locations = face_recognition.face_locations(rgb_frame)
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+        for face_encoding, face_location in zip(face_encodings, face_locations):
+            name = "Unknown"
+            top, right, bottom, left = [v * 4 for v in face_location]
+            face_img = frame[top:bottom, left:right]
+            gray_face = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+            # Eye detection
+            eyes_detected = False
+            landmarks = face_recognition.face_landmarks(rgb_frame, [face_location])
+            if landmarks:
+                left_eye = landmarks[0].get("left_eye", [])
+                right_eye = landmarks[0].get("right_eye", [])
+                if len(left_eye) >= 4 and len(right_eye) >= 4:
+                    eyes_detected = True
+            if not eyes_detected:
+                eyes = eye_cascade.detectMultiScale(gray_face, scaleFactor=1.1, minNeighbors=7, minSize=(30, 30))
+                if len(eyes) >= 2:
+                    eyes_detected = True
+
+            now = datetime.now()
+            timestamp = now.strftime('%Y%m%d_%H%M%S_%f')
+            date_str = now.strftime('%Y-%m-%d')
+            time_str = now.strftime('%H:%M:%S')
+
+            if not eyes_detected:
+                existing = session.query(Attendance).filter_by(name="NoEyes", date=date_str).first()
+                if not existing:
+                    unknown_dir = 'unknown_faces'
+                    os.makedirs(unknown_dir, exist_ok=True)
+                    filename = f"{unknown_dir}/noeyes_{timestamp}.jpg"
+                    cv2.imwrite(filename, face_img)
+                    record = Attendance(name="NoEyes", date=date_str, check_in_time=time_str, image_path=filename)
+                    session.add(record)
+                    session.commit()
+                continue
+
+            face_distances = face_recognition.face_distance(known_faces, face_encoding)
+            if len(face_distances) > 0:
+                best_match_index = np.argmin(face_distances)
+                if face_distances[best_match_index] < FACE_DISTANCE_THRESHOLD:
+                    name = known_names[best_match_index]
+
+            image_dir = 'attendance_faces' if name != "Unknown" else 'unknown_faces'
+            os.makedirs(image_dir, exist_ok=True)
+            filename = f"{image_dir}/{name}_{timestamp}.jpg"
+
+            if name != "Unknown":
+                existing = session.query(Attendance).filter_by(name=name, date=date_str).first()
+                if existing:
+                    if not existing.check_out_time:
+                        from tkinter import messagebox, Tk
+                        root = Tk()
+                        root.withdraw()
+                        if messagebox.askokcancel("Check-out?", f"{name}, do you want to check out?"):
+                            existing.check_out_time = time_str
+                            session.commit()
+                            print(f"{name} checked OUT at {time_str}")
+                else:
+                    cv2.imwrite(filename, face_img)
+                    record = Attendance(name=name, date=date_str, check_in_time=time_str, image_path=filename)
+                    session.add(record)
+                    session.commit()
+                    print(f"{name} checked IN at {time_str}")
+
+            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+            cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+
+        cv2.imshow('Attendance System', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    # ========== EXPORT CSV ==========
+    records = session.query(Attendance).all()
+    df = pd.DataFrame([{
+        'Name': r.name,
+        'Date': r.date,
+        'Check-In': r.check_in_time,
+        'Check-Out': r.check_out_time,
+        'Image': r.image_path
+    } for r in records])
+    df.to_csv('attendance_database_export.csv', index=False)
+    print("\n✅ Attendance exported to 'attendance_database_export.csv'")
+
+if __name__ == '__main__':
+    run_attendance_system()
+
+# === gui_launcher.py ===
+import tkinter as tk
+import threading
+from camera_attendance import run_attendance_system
+import webbrowser
+
+def start_attendance():
+    t = threading.Thread(target=run_attendance_system)
+    t.start()
+
+def open_web():
+    webbrowser.open("http://localhost:5000")
+
+root = tk.Tk()
+root.title("Face Attendance System")
+root.geometry("400x200")
+root.config(bg="#f0f0f0")
+
+tk.Label(root, text="Face Attendance System", font=("Arial", 16, "bold"), bg="#f0f0f0").pack(pady=20)
+
+tk.Button(root, text="🟢 Start Attendance", font=("Arial", 12), bg="#4CAF50", fg="white", command=start_attendance).pack(pady=10)
+
+tk.Button(root, text="📄 View Records", font=("Arial", 12), bg="#2196F3", fg="white", command=open_web).pack(pady=10)
+
+tk.Button(root, text="❌ Quit", font=("Arial", 12), command=root.quit, bg="#F44336", fg="white").pack(pady=10)
+
+root.mainloop()

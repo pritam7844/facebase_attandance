@@ -1,26 +1,18 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Attendance Dashboard</title>
+    <title>Attendance Records</title>
     <style>
-        body { font-family: Arial; background: #f4f4f4; padding: 20px; }
-        h1 { text-align: center; }
-        table { width: 100%; border-collapse: collapse; background: white; }
-        th, td { padding: 10px; border: 1px solid #ccc; text-align: center; }
-        th { background: #007bff; color: white; }
-        img { width: 100px; height: auto; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
     </style>
 </head>
 <body>
-    <h1>Attendance Records</h1>
+    <h2>Attendance Records</h2>
     <table>
         <tr>
-            <th>ID</th>
-            <th>Name</th>
-            <th>Date</th>
-            <th>Check-In</th>
-            <th>Check-Out</th>
-            <th>Image</th>
+            <th>ID</th><th>Name</th><th>Date</th><th>Check-In</th><th>Check-Out</th><th>Image</th>
         </tr>
         {% for r in records %}
         <tr>
@@ -28,8 +20,8 @@
             <td>{{ r.name }}</td>
             <td>{{ r.date }}</td>
             <td>{{ r.check_in_time }}</td>
-            <td>{{ r.check_out_time or "-" }}</td>
-            <td><img src="{{ '/' + r.image_path }}" alt="Face Image"></td>
+            <td>{{ r.check_out_time }}</td>
+            <td><img src="/{{ r.image_path }}" width="100"/></td>
         </tr>
         {% endfor %}
     </table>
