@@ -2,28 +2,8 @@ import face_recognition
 import os
 import cv2
 import numpy as np
-from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from datetime import datetime, timedelta
 import pandas as pd
-
-# ========== DATABASE SETUP ==========
-Base = declarative_base()
-engine = create_engine('sqlite:///attendance.db')
-Session = sessionmaker(bind=engine)
-session = Session()
-
-class Attendance(Base):
-    __tablename__ = 'attendance'
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    date = Column(String)
-    check_in_time = Column(String)
-    check_out_time = Column(String)
-    image_path = Column(String)
-
-Base.metadata.create_all(engine)
 
 # ========== EYE DETECTION ==========
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye_tree_eyeglasses.xml')
@@ -55,9 +35,12 @@ if not known_faces:
     print("Warning: No known faces found. Exiting.")
     exit()
 
+# ========== IN-MEMORY ATTENDANCE RECORD ==========
+attendance_records = []
+
 # ========== START CAMERA ==========
 cap = cv2.VideoCapture(0)
-FACE_DISTANCE_THRESHOLD = 0.5
+FACE_DISTANCE_THRESHOLD = 0.35
 print("Starting camera. Press 'q' to quit.")
 
 while True:
@@ -73,6 +56,7 @@ while True:
     for face_encoding, face_location in zip(face_encodings, face_locations):
         name = "Unknown"
         top, right, bottom, left = [v * 4 for v in face_location]
+
         face_img = frame[top:bottom, left:right]
         gray_face = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
 
@@ -89,47 +73,60 @@ while True:
             if len(eyes) >= 2:
                 eyes_detected = True
 
-        now = datetime.now()
-        timestamp = now.strftime('%Y%m%d_%H%M%S_%f')
-        date_str = now.strftime('%Y-%m-%d')
-        time_str = now.strftime('%H:%M:%S')
-
         if not eyes_detected:
-            unknown_dir = 'unknown_faces'
-            os.makedirs(unknown_dir, exist_ok=True)
-            filename = f"{unknown_dir}/noeyes_{timestamp}.jpg"
-            cv2.imwrite(filename, face_img)
-            record = Attendance(name="NoEyes", date=date_str, check_in_time=time_str, image_path=filename)
-            session.add(record)
-            session.commit()
+            print("Eyes not detected, skipping...")
             continue
+
+        now = datetime.now()
+        now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+        today_str = now.strftime('%Y-%m-%d')
 
         face_distances = face_recognition.face_distance(known_faces, face_encoding)
         if len(face_distances) > 0:
             best_match_index = np.argmin(face_distances)
-            if face_distances[best_match_index] < FACE_DISTANCE_THRESHOLD:
+            best_distance = face_distances[best_match_index]
+            confidence = (1 - best_distance) * 100
+
+            print(f"[MATCH DEBUG] Best: {known_names[best_match_index]} - Distance: {best_distance:.4f} - Confidence: {confidence:.2f}%")
+
+            if best_distance < FACE_DISTANCE_THRESHOLD:
                 name = known_names[best_match_index]
 
-        image_dir = 'attendance_faces' if name != "Unknown" else 'unknown_faces'
-        os.makedirs(image_dir, exist_ok=True)
-        filename = f"{image_dir}/{name}_{timestamp}.jpg"
-        cv2.imwrite(filename, face_img)
+                # Filter today's records for this name
+                todays_records = [r for r in attendance_records if r['name'] == name and r['timestamp'].startswith(today_str)]
 
-        # Check existing record
-        existing = session.query(Attendance).filter_by(name=name, date=date_str).first()
-        if existing:
-            if not existing.check_out_time:
-                existing.check_out_time = time_str
-                session.commit()
-                print(f"{name} checked OUT at {time_str}")
+                if len(todays_records) >= 2:
+                    print(f"{name} already has 2 attendance entries today. Skipping.")
+                    continue
+
+                elif len(todays_records) == 1:
+                    last_time = datetime.strptime(todays_records[0]['timestamp'], '%Y-%m-%d %H:%M:%S')
+                    if (now - last_time) < timedelta(hours=2):
+                        print(f"{name} marked recently (<2 hrs). Skipping.")
+                        continue
+
+                image_dir = 'attendance_faces'
+                os.makedirs(image_dir, exist_ok=True)
+                filename = f"{image_dir}/{name}_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
+                cv2.imwrite(filename, face_img)
+
+                attendance_records.append({
+                    'name': name,
+                    'image_path': filename,
+                    'timestamp': now_str
+                })
+
+                print(f"{name} ✅ Attendance recorded at {now_str}")
+
+                # Draw on frame
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                label_text = f"{name} ({confidence:.1f}%)"
+                cv2.putText(frame, label_text, (left, top - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            else:
+                print("Face not recognized (distance too high), skipping...")
         else:
-            record = Attendance(name=name, date=date_str, check_in_time=time_str, image_path=filename)
-            session.add(record)
-            session.commit()
-            print(f"{name} checked IN at {time_str}")
-
-        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-        cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+            print("No faces in dataset to compare with.")
 
     cv2.imshow('Attendance System', frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -138,14 +135,11 @@ while True:
 cap.release()
 cv2.destroyAllWindows()
 
-# ========== EXPORT CSV ==========
-records = session.query(Attendance).all()
-df = pd.DataFrame([{
-    'Name': r.name,
-    'Date': r.date,
-    'Check-In': r.check_in_time,
-    'Check-Out': r.check_out_time,
-    'Image': r.image_path
-} for r in records])
-df.to_csv('attendance_database_export.csv', index=False)
-print("\n✅ Attendance exported to 'attendance_database_export.csv'")
+# ========== EXPORT TO CSV ==========
+df = pd.DataFrame(attendance_records)
+if not df.empty:
+    df['ID'] = range(1, len(df) + 1)
+    df[['ID']].to_csv('attendance_database_export.csv', index=False)
+    print("\n✅ Attendance exported to 'attendance_database_export.csv' (only IDs)")
+else:
+    print("\n⚠️ No attendance recorded.")

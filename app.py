@@ -1,33 +1,30 @@
-from flask import Flask, render_template
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from flask import Flask, request, jsonify
 from datetime import datetime
 
 app = Flask(__name__)
 
-# DB Setup
-Base = declarative_base()
-engine = create_engine('sqlite:///attendance.db')
-Session = sessionmaker(bind=engine)
-session = Session()
+@app.route('/', methods=['GET'])
+def health_check():
+    print("GET / called")
+    return jsonify({'message': 'Server is running ✅'}), 200
 
-class Attendance(Base):
-    __tablename__ = 'attendance'
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    date = Column(String)
-    check_in_time = Column(String)
-    check_out_time = Column(String)
-    image_path = Column(String)
+@app.route('/record', methods=['POST'])
+def record_attendance():
+    print("POST /record called")
+    data = request.json
+    print("Received data:", data)
 
-# Create table if not exists
-Base.metadata.create_all(engine)
+    if not data or 'name' not in data:
+        return jsonify({'error': 'Missing \"name\" in request body'}), 400
 
-@app.route('/')
-def index():
-    records = session.query(Attendance).order_by(Attendance.id.desc()).all()
-    return render_template('index.html', records=records)
+    name = data['name']
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    return jsonify({
+        'message': f'Attendance received for {name}',
+        'timestamp': timestamp,
+        'status': '✅ success (not stored)'
+    }), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
